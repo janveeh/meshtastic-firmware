@@ -194,6 +194,8 @@ size_t PhoneAPI::getFromRadio(uint8_t *buf)
         auto us = nodeDB->readNextMeshNode(readIndex);
         if (us) {
             nodeInfoForPhone = TypeConversions::ConvertToNodeInfo(us);
+            nodeInfoForPhone.hops_away = 0;
+            nodeInfoForPhone.is_favorite = true;
             fromRadioScratch.which_payload_variant = meshtastic_FromRadio_node_info_tag;
             fromRadioScratch.node_info = nodeInfoForPhone;
             // Should allow us to resume sending NodeInfo in STATE_SEND_OTHER_NODEINFOS
@@ -254,6 +256,13 @@ size_t PhoneAPI::getFromRadio(uint8_t *buf)
         case meshtastic_Config_bluetooth_tag:
             fromRadioScratch.config.which_payload_variant = meshtastic_Config_bluetooth_tag;
             fromRadioScratch.config.payload_variant.bluetooth = config.bluetooth;
+            break;
+        case meshtastic_Config_security_tag:
+            fromRadioScratch.config.which_payload_variant = meshtastic_Config_security_tag;
+            fromRadioScratch.config.payload_variant.security = config.security;
+            break;
+        case meshtastic_Config_sessionkey_tag:
+            fromRadioScratch.config.which_payload_variant = meshtastic_Config_sessionkey_tag;
             break;
         default:
             LOG_ERROR("Unknown config type %d\n", config_state);

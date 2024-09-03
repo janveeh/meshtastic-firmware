@@ -90,7 +90,6 @@ bool PositionModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, mes
         // will always be an equivalent or lesser RTCQuality (RTCQualityNTP or RTCQualityNet).
         force = true;
 #endif
-
         // Set from phone RTC Quality to RTCQualityNTP since it should be approximately so
         trySetRtc(p, isLocal, force);
     }
@@ -126,12 +125,29 @@ void PositionModule::alterReceivedProtobuf(meshtastic_MeshPacket &mp, meshtastic
 
 void PositionModule::trySetRtc(meshtastic_Position p, bool isLocal, bool forceUpdate)
 {
+    if (hasQualityTimesource() && !isLocal) {
+        LOG_DEBUG("Ignoring time from mesh because we have a GPS, RTC, or Phone/NTP time source in the past day\n");
+        return;
+    }
+    if (!isLocal && p.location_source < meshtastic_Position_LocSource_LOC_INTERNAL) {
+        LOG_DEBUG("Ignoring time from mesh because it has a unknown or manual source\n");
+        return;
+    }
     struct timeval tv;
     uint32_t secs = p.time;
 
     tv.tv_sec = secs;
     tv.tv_usec = 0;
+
     perhapsSetRTC(isLocal ? RTCQualityNTP : RTCQualityFromNet, &tv, forceUpdate);
+}
+
+bool PositionModule::hasQualityTimesource()
+{
+    bool setFromPhoneOrNtpToday =
+        lastSetFromPhoneNtpOrGps == 0 ? false : (millis() - lastSetFromPhoneNtpOrGps) <= (SEC_PER_DAY * 1000UL);
+    bool hasGpsOrRtc = (gps && gps->isConnected()) || (rtc_found.address != ScanI2C::ADDRESS_NONE.address);
+    return hasGpsOrRtc || setFromPhoneOrNtpToday;
 }
 
 meshtastic_MeshPacket *PositionModule::allocReply()
@@ -175,16 +191,27 @@ meshtastic_MeshPacket *PositionModule::allocReply()
         p.longitude_i = localPosition.longitude_i;
     }
     p.precision_bits = precision;
-    p.time = localPosition.time;
+    p.has_latitude_i = true;
+    p.has_longitude_i = true;
+    p.time = getValidTime(RTCQualityNTP) > 0 ? getValidTime(RTCQualityNTP) : localPosition.time;
+
+    if (config.position.fixed_position) {
+        p.location_source = meshtastic_Position_LocSource_LOC_MANUAL;
+    }
 
     if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_ALTITUDE) {
-        if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_ALTITUDE_MSL)
+        if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_ALTITUDE_MSL) {
             p.altitude = localPosition.altitude;
-        else
+            p.has_altitude = true;
+        } else {
             p.altitude_hae = localPosition.altitude_hae;
+            p.has_altitude_hae = true;
+        }
 
-        if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_GEOIDAL_SEPARATION)
+        if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_GEOIDAL_SEPARATION) {
             p.altitude_geoidal_separation = localPosition.altitude_geoidal_separation;
+            p.has_altitude_geoidal_separation = true;
+        }
     }
 
     if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_DOP) {
@@ -204,11 +231,15 @@ meshtastic_MeshPacket *PositionModule::allocReply()
     if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_SEQ_NO)
         p.seq_number = localPosition.seq_number;
 
-    if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_HEADING)
+    if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_HEADING) {
         p.ground_track = localPosition.ground_track;
+        p.has_ground_track = true;
+    }
 
-    if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_SPEED)
+    if (pos_flags & meshtastic_Config_PositionConfig_PositionFlags_SPEED) {
         p.ground_speed = localPosition.ground_speed;
+        p.has_ground_speed = true;
+    }
 
     // Strip out any time information before sending packets to other nodes - to keep the wire size small (and because other
     // nodes shouldn't trust it anyways) Note: we allow a device with a local GPS or NTP to include the time, so that devices
@@ -286,7 +317,8 @@ void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t cha
     if (channels.getByIndex(channel).settings.has_module_settings) {
         precision = channels.getByIndex(channel).settings.module_settings.position_precision;
     } else if (channels.getByIndex(channel).role == meshtastic_Channel_Role_PRIMARY) {
-        precision = 32;
+        // backwards compatibility for Primary channels created before position_precision was set by default
+        precision = 13;
     } else {
         precision = 0;
     }

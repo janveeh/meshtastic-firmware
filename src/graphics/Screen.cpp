@@ -21,6 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "Screen.h"
 #include "../userPrefs.h"
+#include "PowerMon.h"
 #include "configuration.h"
 #if HAS_SCREEN
 #include <OLEDDisplay.h>
@@ -36,6 +37,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "gps/RTC.h"
 #include "graphics/ScreenFonts.h"
 #include "graphics/images.h"
+#include "input/ScanAndSelect.h"
 #include "input/TouchScreenImpl1.h"
 #include "main.h"
 #include "mesh-pb-constants.h"
@@ -121,7 +123,7 @@ static bool heartbeat = false;
 /// Check if the display can render a string (detect special chars; emoji)
 static bool haveGlyphs(const char *str)
 {
-#if defined(OLED_UA) || defined(OLED_RU)
+#if defined(OLED_PL) || defined(OLED_UA) || defined(OLED_RU)
     // Don't want to make any assumptions about custom language support
     return true;
 #endif
@@ -1091,7 +1093,8 @@ static void drawNodes(OLEDDisplay *display, int16_t x, int16_t y, const NodeStat
 {
     char usersString[20];
     snprintf(usersString, sizeof(usersString), "%d/%d", nodeStatus->getNumOnline(), nodeStatus->getNumTotal());
-#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(HX8357_CS)) &&          \
+#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(USE_ST7789) ||          \
+     defined(HX8357_CS)) &&                                                                                                      \
     !defined(DISPLAY_FORCE_SMALL_FONTS)
     display->drawFastImage(x, y + 3, 8, 8, imgUser);
 #else
@@ -1574,6 +1577,7 @@ void Screen::handleSetOn(bool on, FrameCallback einkScreensaver)
     if (on != screenOn) {
         if (on) {
             LOG_INFO("Turning on screen\n");
+            powerMon->setState(meshtastic_PowerMon_State_Screen_On);
 #ifdef T_WATCH_S3
             PMU->enablePowerOutput(XPOWERS_ALDO2);
 #endif
@@ -1588,6 +1592,9 @@ void Screen::handleSetOn(bool on, FrameCallback einkScreensaver)
 
             dispdev->displayOn();
 #ifdef USE_ST7789
+            pinMode(VTFT_CTRL, OUTPUT);
+            digitalWrite(VTFT_CTRL, LOW);
+            ui->init();
 #ifdef ESP_PLATFORM
             analogWrite(VTFT_LEDA, BRIGHTNESS_DEFAULT);
 #else
@@ -1599,16 +1606,28 @@ void Screen::handleSetOn(bool on, FrameCallback einkScreensaver)
             setInterval(0); // Draw ASAP
             runASAP = true;
         } else {
+            powerMon->clearState(meshtastic_PowerMon_State_Screen_On);
 #ifdef USE_EINK
             // eInkScreensaver parameter is usually NULL (default argument), default frame used instead
             setScreensaverFrames(einkScreensaver);
 #endif
             LOG_INFO("Turning off screen\n");
             dispdev->displayOff();
-
 #ifdef USE_ST7789
-            pinMode(VTFT_LEDA, OUTPUT);
-            digitalWrite(VTFT_LEDA, !TFT_BACKLIGHT_ON);
+            SPI1.end();
+#if defined(ARCH_ESP32)
+            pinMode(VTFT_LEDA, ANALOG);
+            pinMode(VTFT_CTRL, ANALOG);
+            pinMode(ST7789_RESET, ANALOG);
+            pinMode(ST7789_RS, ANALOG);
+            pinMode(ST7789_NSS, ANALOG);
+#else
+            nrf_gpio_cfg_default(VTFT_LEDA);
+            nrf_gpio_cfg_default(VTFT_CTRL);
+            nrf_gpio_cfg_default(ST7789_RESET);
+            nrf_gpio_cfg_default(ST7789_RS);
+            nrf_gpio_cfg_default(ST7789_NSS);
+#endif
 #endif
 
 #ifdef T_WATCH_S3
@@ -2288,6 +2307,11 @@ void Screen::handlePrint(const char *text)
 
 void Screen::handleOnPress()
 {
+    // If Canned Messages is using the "Scan and Select" input, dismiss the canned message frame when user button is pressed
+    // Minimize impact as a courtesy, as "scan and select" may be used as default config for some boards
+    if (scanAndSelectInput != nullptr && scanAndSelectInput->dismissCannedMessageFrame())
+        return;
+
     // If screen was off, just wake it, otherwise advance to next frame
     // If we are in a transition, the press must have bounced, drop it.
     if (ui->getUiState()->frameState == FIXED) {
@@ -2391,7 +2415,8 @@ void DebugInfo::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
 #ifdef ARCH_ESP32
         if (millis() - storeForwardModule->lastHeartbeat >
             (storeForwardModule->heartbeatInterval * 1200)) { // no heartbeat, overlap a bit
-#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(HX8357_CS)) &&          \
+#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(USE_ST7789) ||          \
+     defined(HX8357_CS)) &&                                                                                                      \
     !defined(DISPLAY_FORCE_SMALL_FONTS)
             display->drawFastImage(x + SCREEN_WIDTH - 14 - display->getStringWidth(ourId), y + 3 + FONT_HEIGHT_SMALL, 12, 8,
                                    imgQuestionL1);
@@ -2402,7 +2427,8 @@ void DebugInfo::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
                                    imgQuestion);
 #endif
         } else {
-#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(HX8357_CS)) &&          \
+#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(USE_ST7789) ||          \
+     defined(HX8357_CS)) &&                                                                                                      \
     !defined(DISPLAY_FORCE_SMALL_FONTS)
             display->drawFastImage(x + SCREEN_WIDTH - 18 - display->getStringWidth(ourId), y + 3 + FONT_HEIGHT_SMALL, 16, 8,
                                    imgSFL1);
@@ -2416,8 +2442,8 @@ void DebugInfo::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
 #endif
     } else {
         // TODO: Raspberry Pi supports more than just the one screen size
-#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(HX8357_CS) ||           \
-     ARCH_PORTDUINO) &&                                                                                                          \
+#if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ST7735_CS) || defined(ST7789_CS) || defined(USE_ST7789) ||          \
+     defined(HX8357_CS) || ARCH_PORTDUINO) &&                                                                                    \
     !defined(DISPLAY_FORCE_SMALL_FONTS)
         display->drawFastImage(x + SCREEN_WIDTH - 14 - display->getStringWidth(ourId), y + 3 + FONT_HEIGHT_SMALL, 12, 8,
                                imgInfoL1);
