@@ -51,6 +51,8 @@
 #define HW_VENDOR meshtastic_HardwareModel_WISMESH_TAP
 #elif defined(GAT562_MESH_TRIAL_TRACKER)
 #define HW_VENDOR meshtastic_HardwareModel_GAT562_MESH_TRIAL_TRACKER
+#elif defined(ROAMER)
+#define HW_VENDOR meshtastic_HardwareModel_EMBEDDED_ARTS_ROAMER
 #elif defined(RAK4630)
 #define HW_VENDOR meshtastic_HardwareModel_RAK4631
 #elif defined(TTGO_T_ECHO)
